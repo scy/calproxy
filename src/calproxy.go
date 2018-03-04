@@ -14,13 +14,15 @@ import (
 	"time"
 )
 
-func escapeCalValue(val string) string {
+func escapeCalParamValue(val string) string {
+	// Property param values may not include double quotes.
+	val = strings.Replace(val, "\"", "", -1)
 	return "\"" + val + "\""
 }
 
 func paramToString(param *ical.Param) string {
 	for idx, val := range param.Values {
-		param.Values[idx] = escapeCalValue(val)
+		param.Values[idx] = escapeCalParamValue(val)
 	}
 	return strings.Join(param.Values, ",")
 }
