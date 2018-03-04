@@ -1,26 +1,116 @@
 package main
 
 import (
+	"crypto/sha512"
 	"fmt"
+	"github.com/luxifer/ical"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
-	"time"
 	"strconv"
-	"crypto/sha512"
+	"strings"
+	"time"
 )
 
+func escapeCalValue(val string) string {
+	return "\"" + val + "\""
+}
+
+func paramToString(param *ical.Param) string {
+	for idx, val := range param.Values {
+		param.Values[idx] = escapeCalValue(val)
+	}
+	return strings.Join(param.Values, ",")
+}
+
+func paramsToString(params map[string]*ical.Param) string {
+	stringSlice := make([]string, 0)
+	for name, param := range params {
+		stringSlice = append(stringSlice, fmt.Sprintf("%s=%s", name, paramToString(param)))
+	}
+	return strings.Join(stringSlice, ";")
+}
+
+func propToString(prop *ical.Property) string {
+	paramStr := paramsToString(prop.Params)
+	if paramStr != "" {
+		paramStr = ";" + paramStr
+	}
+	return fmt.Sprintf("%s%s:%s", prop.Name, paramStr, prop.Value)
+}
+
+func filteredHeaders(headers []*ical.Property) string {
+	lines := make([]string, 0)
+	allow := false
+	for _, prop := range headers {
+		if prop.Name == "BEGIN" && prop.Value == "VTIMEZONE" {
+			allow = true
+		}
+		if allow {
+			lines = append(lines, propToString(prop))
+		}
+		if prop.Name == "END" && prop.Value == "VTIMEZONE" {
+			allow = false
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func censoredEvent(event *ical.Event, calID string) string {
+	lines := make([]string, 0)
+	lines = append(lines, "BEGIN:VEVENT")
+	lines = append(lines, "SUMMARY:(busy)")
+	for _, prop := range event.Properties {
+		switch prop.Name {
+		case "DTSTART", "DTEND", "DURATION", "RRULE":
+			lines = append(lines, propToString(prop))
+		case "UID":
+			prop.Value = fmt.Sprintf("calproxy-%s-%x", prop.Value, calID)
+			lines = append(lines, propToString(prop))
+		}
+	}
+	lines = append(lines, "END:VEVENT")
+	return strings.Join(lines, "\n")
+}
+
 type Origin struct {
-	URL        *url.URL
+	url        *url.URL
+	id         string
 	RawContent string
 	LastFetch  time.Time
-	ticker *time.Ticker
+	FreeBusy   string
+	ticker     *time.Ticker
+}
+
+func (o *Origin) updateFreeBusy() error {
+	cal, err := ical.Parse(strings.NewReader(o.RawContent))
+	if err != nil {
+		return err
+	}
+	lines := make([]string, 0)
+	lines = append(lines, "BEGIN:VCALENDAR")
+	lines = append(lines, filteredHeaders(cal.Properties))
+	for _, event := range cal.Events {
+		lines = append(lines, censoredEvent(event, o.id))
+	}
+	lines = append(lines, "END:VCALENDAR")
+	o.FreeBusy = strings.Join(lines, "\n")
+	return nil
+}
+
+func (o *Origin) GetID() string {
+	return o.id
+}
+
+func (o *Origin) SetURL(url *url.URL) {
+	o.url = url
+	o.id = fmt.Sprintf("%x", sha512.Sum512([]byte(url.String())))
 }
 
 func (o *Origin) Fetch() error {
-	resp, err := http.Get(o.URL.String())
+	resp, err := http.Get(o.url.String())
 	if err != nil {
 		return err
 	}
@@ -34,6 +124,16 @@ func (o *Origin) Fetch() error {
 	return nil
 }
 
+func (o *Origin) FetchAndParse() error {
+	if err := o.Fetch(); err != nil {
+		return err
+	}
+	if err := o.updateFreeBusy(); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (o *Origin) AutoUpdate(every time.Duration) {
 	if o.ticker != nil {
 		// Stop existing ticker.
@@ -42,9 +142,9 @@ func (o *Origin) AutoUpdate(every time.Duration) {
 	o.ticker = time.NewTicker(every)
 	go func() {
 		for {
-			<- o.ticker.C
+			<-o.ticker.C
 			log.Print("updating from origin")
-			err := o.Fetch()
+			err := o.FetchAndParse()
 			if err == nil {
 				log.Print("updated successfully")
 			} else {
@@ -56,20 +156,25 @@ func (o *Origin) AutoUpdate(every time.Duration) {
 
 type Server struct {
 	Origin *Origin
-	Hash string
-	secret string
 }
 
-func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
-	log.Printf("valid request from %s", r.RemoteAddr)
+func (s *Server) calHandler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("valid calendar request from %s", r.RemoteAddr)
 	fmt.Fprint(w, s.Origin.RawContent)
 }
 
+func (s *Server) freeBusyHandler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("valid free/busy request from %s", r.RemoteAddr)
+	fmt.Fprint(w, s.Origin.FreeBusy)
+}
+
 func (s *Server) ListenAndServe() error {
-	s.secret = os.Getenv("CALPROXY_SECRET")
-	s.Hash = fmt.Sprintf("%x", sha512.Sum512([]byte(s.secret + s.Origin.URL.String())))
-	log.Printf("calendar will be served at %s.ics", s.Hash)
-	http.HandleFunc(fmt.Sprintf("/%s.ics", s.Hash), s.handler)
+	secret := os.Getenv("CALPROXY_SECRET")
+	hash := fmt.Sprintf("%x", sha512.Sum512([]byte(secret+s.Origin.GetID())))
+	log.Printf("calendar will be served at %s.ics", hash)
+	http.HandleFunc(fmt.Sprintf("/%s.ics", hash), s.calHandler)
+	log.Printf("free/busy will be served at %s.ics", s.Origin.GetID())
+	http.HandleFunc(fmt.Sprintf("/%s.ics", s.Origin.GetID()), s.freeBusyHandler)
 	port, err := strconv.Atoi(os.Getenv("CALPROXY_PORT"))
 	if err != nil {
 		return err
@@ -84,15 +189,15 @@ func createOrigin() *Origin {
 	if err != nil {
 		log.Fatal(err)
 	}
-	return &Origin{
-		URL: originURL,
-	}
+	origin := Origin{}
+	origin.SetURL(originURL)
+	return &origin
 }
 
 func main() {
 	origin := createOrigin()
 	log.Print("starting initial fetch")
-	err := origin.Fetch()
+	err := origin.FetchAndParse()
 	if err != nil {
 		log.Fatal(err)
 	}
