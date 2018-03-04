@@ -58,10 +58,13 @@ func filteredHeaders(headers []*ical.Property) string {
 	return strings.Join(lines, "\n")
 }
 
-func censoredEvent(event *ical.Event, calID string) string {
+func censoredEvent(event *ical.Event, calID string, fbTitle string) string {
 	lines := make([]string, 0)
 	lines = append(lines, "BEGIN:VEVENT")
-	lines = append(lines, "SUMMARY:(busy)")
+	lines = append(lines, propToString(&ical.Property{
+		Name: "SUMMARY",
+		Value: fbTitle,
+	}))
 	for _, prop := range event.Properties {
 		switch prop.Name {
 		case "DTSTART", "DTEND", "DURATION", "RRULE":
@@ -89,11 +92,12 @@ func (o *Origin) updateFreeBusy() error {
 	if err != nil {
 		return err
 	}
+	fbTitle := os.Getenv("CALPROXY_FB_TITLE")
 	lines := make([]string, 0)
 	lines = append(lines, "BEGIN:VCALENDAR")
 	lines = append(lines, filteredHeaders(cal.Properties))
 	for _, event := range cal.Events {
-		lines = append(lines, censoredEvent(event, o.id))
+		lines = append(lines, censoredEvent(event, o.id, fbTitle))
 	}
 	lines = append(lines, "END:VCALENDAR")
 	o.FreeBusy = strings.Join(lines, "\n")
