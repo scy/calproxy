@@ -72,7 +72,7 @@ func censoredEvent(event *ical.Event, calID string, fbTitle string) string {
 		case "DTSTART", "DTEND", "DURATION", "RRULE":
 			lines = append(lines, propToString(prop))
 		case "UID":
-			prop.Value = fmt.Sprintf("calproxy-%s-%x", prop.Value, calID)
+			prop.Value = fmt.Sprintf("calproxy-%s-%s", prop.Value, calID)
 			lines = append(lines, propToString(prop))
 		}
 	}
