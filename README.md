@@ -81,7 +81,7 @@ Free/busy will be at `sha512(origin_url) + ".ics"`, the private version at `sha5
 ## Bugs
 
 * I have tested with with the iCal returned by our groupware only. 
-  It could refuse to with other inputs; the iCal format is crap.
+  It could refuse to work with other inputs; the iCal format is crap.
 * It should probably provide some additional HTTP headers, for example a last modified timestamp or a nerdy pop culture reference.
 * It doesn't provide real free/busy data, i.e. no `VFREEBUSY` blocks. 
   That's because these cannot have `RRULE` repetition rule definitions, which means that I would have to convert the RRULEs to multiple time intervals myself. 
