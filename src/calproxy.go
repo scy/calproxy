@@ -2,8 +2,10 @@ package main
 
 import (
 	"crypto/sha512"
+	"encoding/base64"
 	"fmt"
 	"github.com/luxifer/ical"
+	"golang.org/x/crypto/ssh/terminal"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -64,7 +66,7 @@ func censoredEvent(event *ical.Event, calID string, fbTitle string) string {
 	lines := make([]string, 0)
 	lines = append(lines, "BEGIN:VEVENT")
 	lines = append(lines, propToString(&ical.Property{
-		Name: "SUMMARY",
+		Name:  "SUMMARY",
 		Value: fbTitle,
 	}))
 	for _, prop := range event.Properties {
@@ -83,6 +85,7 @@ func censoredEvent(event *ical.Event, calID string, fbTitle string) string {
 type Origin struct {
 	url        *url.URL
 	id         string
+	auth       string
 	RawContent string
 	LastFetch  time.Time
 	FreeBusy   string
@@ -110,13 +113,36 @@ func (o *Origin) GetID() string {
 	return o.id
 }
 
-func (o *Origin) SetURL(url *url.URL) {
-	o.url = url
-	o.id = fmt.Sprintf("%x", sha512.Sum512([]byte(url.String())))
+func (o *Origin) SetURL(theURL *url.URL) {
+	if theURL.User != nil {
+		// Prepare a basic auth header value to prevent leaking the password in error messages, see
+		// <https://github.com/golang/go/issues/24572>
+		auth := theURL.User.Username()
+		if pass, passSet := theURL.User.Password(); passSet {
+			auth += ":" + pass
+		}
+		o.auth = "Basic " + base64.StdEncoding.EncodeToString([]byte(auth))
+		cleanURL := &url.URL{}
+		*cleanURL = *theURL
+		cleanURL.User = nil
+		o.url = cleanURL
+	} else {
+		o.auth = ""
+		o.url = theURL
+	}
+	o.id = fmt.Sprintf("%x", sha512.Sum512([]byte(theURL.String())))
 }
 
 func (o *Origin) Fetch() error {
-	resp, err := http.Get(o.url.String())
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", o.url.String(), nil)
+	if err != nil {
+		return err
+	}
+	if o.auth != "" {
+		req.Header.Set("Authorization", o.auth)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -191,7 +217,17 @@ func (s *Server) ListenAndServe() error {
 }
 
 func createOrigin() *Origin {
-	originURL, err := url.Parse(os.Getenv("CALPROXY_ORIGIN"))
+	originStr := os.Getenv("CALPROXY_ORIGIN")
+	if originStr == "" {
+		fmt.Print("CALPROXY_ORIGIN not set, enter origin URL (will not be shown): ")
+		bytes, err := terminal.ReadPassword(int(os.Stdin.Fd()))
+		if err != nil {
+			log.Fatal(err)
+		}
+		originStr = string(bytes)
+		fmt.Println()
+	}
+	originURL, err := url.Parse(originStr)
 	if err != nil {
 		log.Fatal(err)
 	}

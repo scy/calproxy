@@ -51,7 +51,10 @@ These are the variables you should provide:
   It doesn't do authentication, you can't specify an interface.
 * **CALPROXY_ORIGIN:** 
   The URL of the calendar you want to mirror. 
-  If it requires a username and password, provide it in the URL the usual way, i.e. `https://user:password@example.com/my-little-calendar.ics`.
+  If it requires a username and password, provide it in the URL the usual way, i.e. `https://user:password@example.com/my-little-calendar.ics`. 
+  If you do not provide this variable, you will be prompted to enter the origin on stdin. 
+  Local terminal echo will be disabled then. 
+  This allows you to enter (or paste) the URL without anyone seeing it and without it being accessible in the environment variables of the process.
 * **CALPROXY_SECRET:** 
   Set this to a random string. 
   The "private version" of your calendar will have a file name that's `sha512(secret + sha512(origin_url))`. 
